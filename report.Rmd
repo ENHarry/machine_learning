@@ -1,0 +1,151 @@
+---
+title: "Prediction of Workout Performance Based off Previous Performance"
+author: "Emi N. Harry"
+date: "July 25, 2016"
+output: html_document
+---
+
+```{r setup, cache = F, echo = F, message = F, warning = F, tidy = F}
+knitr::opts_chunk$set(message = F, error = F, warning = F, comment = NA, cache=TRUE, fig.align = 'center', dpi = 100, tidy = F, cache.path = '.cache/', fig.path = 'fig/')
+```
+
+## Executive Summary
+
+The data from the accelometers of 6 participants was preprocessed and fitted to 3 models using random forest (rf), regularized random forest (RRF) and stochastic gradient boosting (gbm). The first model fit done with "rf" has 99.75% accuracy, the second model fit done with "gbm" has 99.75% accuracy and the third model fit done with "RRF" has 100% accuracy. When all the 3 models are stacked, the final model is fitted using "gbm" and it has 100% accuracy.
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participant to predict the manner in which they did the exercises. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Getting and Cleaning The Data
+
+The first step is to load the data sets into R.
+```{r}
+require(data.table)
+Build <- fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+validate <- fread("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+str(Build)
+```
+
+Remove the first column for both data sets as it serves no purpose and convert the data sets to dataframes.
+```{r}
+Build <- data.frame(Build)
+Build <- Build[, -1]
+Build$classe <- as.factor(Build$classe)
+
+validate <- data.frame(validate)
+validate <- validate[, -1]
+```
+
+Process for the Build data set to observe near zero predictors.
+```{r}
+require(caret)
+nzv <- nearZeroVar(Build, saveMetrics = TRUE)
+nzvVal <- nearZeroVar(validate, saveMetrics = TRUE)
+```
+
+Next check to see which variables with zero variance
+```{r}
+nzv[nzv[,"zeroVar"] > 0, ]
+nzvVal[nzv[,"zeroVar"] > 0, ]
+```
+There are clearly no variables(predictors) with zero variance so the next step is to identify all variables with near zero variance.
+```{r}
+nzv[nzv[,"zeroVar"] + nzv[,"nzv"] > 0, ]
+nzvVal[nzv[,"zeroVar"] + nzv[,"nzv"] > 0, ]
+
+letgo <- nzv[nzv[,"zeroVar"] + nzv[,"nzv"] > 0, ]
+letgo1 <- nzvVal[nzv[,"zeroVar"] + nzv[,"nzv"] > 0, ]
+```
+The variables above will now be removed from the Build data set. To achieve this, the row names in this nzv data set will be extracted as column names by creating a string vector with the row names and then subsetting the Build data set, after which the first column of the data set will be removed since it serves no purpose.
+```{r}
+letgoNames <- c(rownames(letgo))
+newBuild = Build[,!(names(Build) %in% letgoNames)]
+
+letgoNames1 <- c(rownames(letgo1))
+newvalidate = validate[,!(names(validate) %in% letgoNames1)]
+```
+
+### Visualization of NA Pattern
+
+Plotting a pattern of the missing data will help in deciding if to delete all rows with missing data or if we and replace them with aggregates.
+```{r}
+require(VIM)
+aggr_plot <- aggr(newBuild, col=c('green','yellow'), numbers=TRUE, sortVars=TRUE, 
+                  labels=names(newBuild), cex.axis=.7, gap=3, 
+                  ylab=c("Histogram of missing data","Pattern"))
+```
+
+### Preprocessing of the Data Sets
+
+The data sets are preprocessed to ensure there are no NA values. The original training set which is save as building will be used to create a new training and testing set, while the original testing set will be used for the cross validation.
+```{r}
+require(RANN)
+preProcValues <- preProcess(newBuild, method = c("center", "scale", "knnImpute", "nzv"), na.remove = T, verbose = F)
+building <- predict(preProcValues, newBuild)
+building$classe <- Build$classe
+validation <- predict(preProcValues, newvalidate)
+```
+
+Partition the Build data set in order to create  training and testing data sets.
+```{r}
+inTrain <- createDataPartition(y=building$classe, p=0.7, list=FALSE)
+training <- building[inTrain,]; testing <- building[-inTrain,]
+```
+
+## Prediction Modelling
+
+In order to get predictions with a high accuracy, the model ensembling method is going to be used. 3 models will be fitted using random forest and boosting.
+```{r}
+require(gbm); require(randomForest);
+set.seed(4400)
+mod1 <- train(classe ~.,method="rf",data=training, metric = "Accuracy",
+              trControl = trainControl(method = "cv"), number=5)
+mod2 <- train(classe ~.,method="gbm",data=training)
+mod3 <- train(classe ~.,method="RRF",data=training)
+```
+
+
+### Predicting on testing data
+
+The individual predictions are carried out.
+```{r}
+pred1 <- predict(mod1, testing); pred2 <- predict(mod2, testing); pred3 <- predict(mod3, testing) 
+```
+
+
+### Model Ensembling
+Next I stack the prediction models and fit using boosting to get a new model.
+```{r}
+predDF <- data.frame(pred1,pred2,pred3,classe=testing$classe)
+set.seed(23465)
+combModFit <- train(classe ~.,method="gbm",data=predDF)
+combPred <- predict(combModFit,predDF)
+```
+
+### Confusion Matrix
+The confusion matrix shows their accuracy level
+```{r}
+confusionMatrix(pred1, testing$classe)
+confusionMatrix(pred2, testing$classe)
+confusionMatrix(pred3, testing$classe)
+confusionMatrix(combPred, testing$classe)
+```
+It is clear that the ensembled model has a higher accuracy of 100%.
+
+### Cross Validation
+Now the original testing set is being used for the cross validation.
+```{r}
+pred1V <- predict(mod1,validation); pred2V <- predict(mod2,validation); pred3V <- predict(mod3,validation)
+predVDF <- data.frame(pred1=pred1V,pred2=pred2V,pred3=pred3V)
+combPredV <- predict(combModFit,predVDF)
+```
+
+## Conclusion
+
+The final predictions are as follows:
+```{r}
+combPredV
+```
+
